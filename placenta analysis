@@ -1,0 +1,121 @@
+rm(list=ls())
+# clean the environment 
+
+library(dplyr)
+library(Seurat)
+library(patchwork)
+
+library(rliger)
+library(Seurat)
+library(SeuratData)
+library(SeuratWrappers)
+library(ggplot2)
+
+C1.data <- Read10X(data.dir = "C:/GSE173193_RAW/Ctrl/C1/")
+C2.data <- Read10X(data.dir = "C:/GSE173193_RAW/Ctrl/C2/")
+G1.data <- Read10X(data.dir = "C:/GSE173193_RAW/GDM/G1/")
+G2.data <- Read10X(data.dir = "C:/GSE173193_RAW/GDM/G2/")
+
+C1 <- CreateSeuratObject(counts = C1.data, project = "Ctrl", min.cells = 3, min.features = 200)
+C2 <- CreateSeuratObject(counts = C2.data, project = "Ctrl", min.cells = 3, min.features = 200)
+G1 <- CreateSeuratObject(counts = G1.data, project = "GDM", min.cells = 3, min.features = 200)
+G2 <- CreateSeuratObject(counts = G2.data, project = "GDM", min.cells = 3, min.features = 200)
+
+C1[["percent.mt"]] <- PercentageFeatureSet(C1, pattern = "^MT-")
+C2[["percent.mt"]] <- PercentageFeatureSet(C2, pattern = "^MT-")
+G1[["percent.mt"]] <- PercentageFeatureSet(G1, pattern = "^MT-")
+G2[["percent.mt"]] <- PercentageFeatureSet(G2, pattern = "^MT-")
+
+
+sd(C1$nFeature_RNA)
+mean(C1$nFeature_RNA)
+
+# mean +/- 2 * sd to filter 
+
+VlnPlot(C1, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+C1 <- subset(C1, subset = nFeature_RNA < mean(C1$nFeature_RNA) + sd(C1$nFeature_RNA)*2 & nFeature_RNA > mean(C1$nFeature_RNA) - sd(C1$nFeature_RNA) & percent.mt < 10)
+C2 <- subset(C2, subset = nFeature_RNA < mean(C2$nFeature_RNA) + sd(C2$nFeature_RNA)*2 & nFeature_RNA > mean(C2$nFeature_RNA) - sd(C2$nFeature_RNA) & percent.mt < 10)
+G1 <- subset(G1, subset = nFeature_RNA < mean(G1$nFeature_RNA) + sd(G1$nFeature_RNA)*2 & nFeature_RNA > mean(G1$nFeature_RNA) - sd(G1$nFeature_RNA) & percent.mt < 10)
+G2 <- subset(G2, subset = nFeature_RNA < mean(G2$nFeature_RNA) + sd(G2$nFeature_RNA)*2 & nFeature_RNA > mean(G2$nFeature_RNA) - sd(G2$nFeature_RNA) & percent.mt < 10)
+
+combined <- merge(C1, y = c(C2, G1, G2), add.cell.ids = c("C1", "C2", "G1", "G2"), project = "PLA")
+
+combined <- NormalizeData(combined)
+combined <- FindVariableFeatures(combined)
+combined <- ScaleData(combined, split.by = "orig.ident", do.center = FALSE)
+combined <- RunOptimizeALS(combined, k = 20, lambda = 5, split.by = "orig.ident")
+combined <- RunQuantileNorm(combined, split.by = "orig.ident")
+
+# You can optionally perform Louvain clustering (`FindNeighbors` and `FindClusters`) after
+# `RunQuantileNorm` according to your needs
+combined <- FindNeighbors(combined, reduction = "iNMF", dims = 1:20)
+combined <- FindClusters(combined, resolution = 0.1)
+
+# resolution 0.2 for Ctrl vs GDM 
+combined <- FindClusters(combined, resolution = 0.2)
+
+# Dimensional reduction and plotting
+combined <- RunUMAP(combined, dims = 1:ncol(combined[["iNMF"]]), reduction = "iNMF")
+
+# BELOW ANNOTATION IS BASED ON SEURAT RESOLUTION 0.2
+# annotation markers were based on the original paper 
+combined <- RenameIdents(object = combined, '0' = 'VCT', '1' = 'Granulocyte', '2' = 'Macrophage', '3' = 'EVT', '4' = 'Myelocyte', '5' = 'T', '6' = 'Monocyte', 
+                         '7' = 'VCT', '8' = 'VCT', '9' = 'NK', '10' = 'Others', '11' = 'SCT', '12'= 'Granulocyte', '13' = 'Granulocyte', '14' = 'Granulocyte')
+
+# calculation of gene set score 
+HALLMARK_OXPHOS <- readLines("C:/HALLMARK_OXPHOS.v2023.2..csv")
+HALLMARK_INFLAMMATORY <- readLines("C:/HALLMARK_INFLAMMATORY_RESPONSE.v2023.2.Mm.csv")
+HALLMARK_INFLAMMATORY <- toupper(HALLMARK_INFLAMMATORY)
+combined <- CellCycleScoring(combined, s.features = HALLMARK_OXPHOS, g2m.features = HALLMARK_INFLAMMATORY, set.ident = FALSE)
+
+
+################## below GSEA analysis for T cells as an example ####################
+Idents(Tcell) <- Tcell$orig.ident
+
+library(presto)
+Tcell.genes <- wilcoxauc(Tcell, 'orig.ident')
+dplyr::count(Tcell.genes, group)
+
+library(msigdbr)
+library(fgsea)
+library(dplyr)
+library(ggplot2)
+
+m_df<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:REACTOME") # could switch to different gene sets 
+m_df<- msigdbr(species = "Homo sapiens", category = "H") # could switch to different gene sets 
+
+fgsea_sets<- m_df %>% split(x = .$gene_symbol, f = .$gs_name)
+
+Tcell.genes %>%
+  dplyr::filter(group == "Ctrl") %>%
+  arrange(desc(logFC), desc(auc)) %>%
+  head(n = 10)
+
+Ctrl.genes<- Tcell.genes %>%
+  dplyr::filter(group == "Ctrl") %>%
+  arrange(desc(auc)) %>% 
+  dplyr::select(feature, auc)
+
+ranks<- tibble::deframe(Ctrl.genes)
+
+head(ranks)
+
+fgseaRes<- fgsea(fgsea_sets, stats = ranks, nperm = 1000)
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+
+fgseaResTidy %>% 
+  dplyr::select(-leadingEdge, -ES, -nMoreExtreme) %>% 
+  arrange(padj) %>% 
+  head()
+
+# only plot the top 10 pathways
+ggplot(fgseaResTidy %>% filter(padj < 0.05) %>% head(n= 50), aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill= NES < 4)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
