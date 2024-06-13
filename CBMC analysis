@@ -1,0 +1,54 @@
+rm(list=ls())
+
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(rliger)
+library(SeuratWrappers)
+library(ggplot2)
+library(stats)
+library(stringr)
+
+# Load the PBMC dataset
+GDM1.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/GDM1_filtered.tar")
+GDM2.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/GDM2_filtered.tar")
+GDM3.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/GDM3_filtered.tar")
+GDM4.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/GDM4_filtered.tar")
+NC1.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/NC1_filtered.tar")
+NC2.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/NC2_filtered.tar")
+NC3.data <- Read10X(data.dir = "C:/GSE212309_filtered.tar/NC3_filtered.tar")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+GDM1 <- CreateSeuratObject(counts = GDM1.data, project = "GDM1", min.cells = 3, min.features = 200)
+GDM2 <- CreateSeuratObject(counts = GDM2.data, project = "GDM2", min.cells = 3, min.features = 200)
+GDM3 <- CreateSeuratObject(counts = GDM3.data, project = "GDM3", min.cells = 3, min.features = 200)
+GDM4 <- CreateSeuratObject(counts = GDM4.data, project = "GDM4", min.cells = 3, min.features = 200)
+NC1 <- CreateSeuratObject(counts = NC1.data, project = "NC1", min.cells = 3, min.features = 200)
+NC2 <- CreateSeuratObject(counts = NC2.data, project = "NC2", min.cells = 3, min.features = 200)
+NC3 <- CreateSeuratObject(counts = NC3.data, project = "NC3", min.cells = 3, min.features = 200)
+
+CBMC <- merge(GDM1, y = c(GDM2, GDM3, GDM4, NC1, NC2, NC3), add.cell.ids = c("GDM1", "GDM2", "GDM3", "GDM4", "NC1", "NC2", "NC3"), project = "CBMC")
+# 80691 samples 
+
+CBMC[["percent.mt"]] <- PercentageFeatureSet(CBMC, pattern = "^MT-")
+VlnPlot(CBMC, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+CBMC <- subset(CBMC, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 15)
+# 22717 features across 79496 samples
+
+CBMC <- NormalizeData(CBMC)
+CBMC <- FindVariableFeatures(CBMC)
+CBMC <- ScaleData(CBMC, split.by = "orig.ident", do.center = FALSE)
+CBMC <- RunOptimizeALS(CBMC, k = 20, lambda = 5, split.by = "orig.ident")
+CBMC <- RunQuantileNorm(CBMC, split.by = "orig.ident")
+
+# You can optionally perform Louvain clustering (`FindNeighbors` and `FindClusters`) after
+# `RunQuantileNorm` according to your needs
+CBMC <- FindNeighbors(CBMC, reduction = "iNMF", dims = 1:20)
+CBMC <- FindClusters(CBMC, resolution = 0.3)
+# Dimensional reduction and plotting
+CBMC <- RunUMAP(CBMC, dims = 1:ncol(CBMC[["iNMF"]]), reduction = "iNMF")
+DimPlot(CBMC, group.by = c("orig.ident", "ident"), ncol = 2)
+
+# populations could be annotated using markers from the original paper 
+# following analysis such as GSEA and Gene set score calculation can refer to analysis script for placenta 
